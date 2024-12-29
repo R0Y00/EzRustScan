@@ -22,9 +22,9 @@ EzRustScan 是一个用 Rust 编写的高性能端口扫描器，支持扫描单
 运行本工具之前，您需要确保以下条件：
 1. **Rust 环境**：安装最新的 Rust（推荐使用 [Rust 官方工具链安装器](https://rustup.rs/)）。
 2. **依赖库**：使用 `cargo` 安装以下依赖。
-   ```bash
-   cargo add tokio ipnetwork clap colored
-   ```
+```bash
+cargo add tokio ipnetwork clap colored
+```
 
 ### 编译项目
 
