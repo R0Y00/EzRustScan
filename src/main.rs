@@ -5,6 +5,7 @@ use ipnetwork::IpNetwork;
 use clap::{Command, Arg, value_parser};
 use colored::*; // 引入 colored 库
 use tokio::sync::{Semaphore, Mutex};
+use indicatif::{ProgressBar, ProgressStyle}; // 引入 indicatif 库
 
 #[tokio::main]
 async fn main() {
@@ -131,11 +132,19 @@ async fn scan_ports(
     let results = Arc::new(Mutex::new(Vec::new()));
     let mut handles = Vec::new();
 
+    // 初始化进度条
+    let pb = ProgressBar::new(ports.len() as u64);
+    pb.set_style(ProgressStyle::default_bar()
+        .template("{wide_bar} {pos}/{len} [{elapsed_precise}]")
+        .expect("Failed to create ProgressStyle")
+        .progress_chars("##-"));
+
     for port in ports {
         let semaphore_clone = semaphore.clone();
         let ip = ip.clone();
         let results = Arc::clone(&results);
         let show_closed = show_closed;
+        let pb = pb.clone(); // 克隆进度条
 
         let handle = tokio::spawn(async move {
             let permit = semaphore_clone.acquire_owned().await.unwrap(); // 获取许可
@@ -144,6 +153,7 @@ async fn scan_ports(
                 let mut results_lock = results.lock().await;
                 results_lock.push(port);
             }
+            pb.inc(1); // 更新进度条
             drop(permit); // 释放许可
         });
         handles.push(handle);
@@ -155,6 +165,8 @@ async fn scan_ports(
             eprintln!("任务执行出错: {}", e);
         }
     }
+
+    pb.finish_with_message("扫描完成");
 
     let results_lock = results.lock().await;
     results_lock.clone()
@@ -197,11 +209,19 @@ async fn scan_network(
     let ips: Vec<std::net::IpAddr> = network.iter().collect();
     let mut handles = Vec::new();
 
+    // 初始化进度条
+    let pb = ProgressBar::new(ips.len() as u64);
+    pb.set_style(ProgressStyle::default_bar()
+        .template("{wide_bar} {pos}/{len} [{elapsed_precise}]")
+        .expect("Failed to create ProgressStyle")
+        .progress_chars("##-"));
+
     for ip in ips {
         let open_ips = open_ips.clone();
         let ip_str = ip.to_string();
         let semaphore = semaphore.clone();
         let show_closed = show_closed;
+        let pb = pb.clone(); // 克隆进度条
 
         let handle = tokio::spawn(async move {
             let semaphore_clone = semaphore.clone();
@@ -214,6 +234,7 @@ async fn scan_network(
                 open_ips_lock.push(ip_str);
             }
 
+            pb.inc(1); // 更新进度条
             drop(permit); // 释放许可
         });
 
@@ -226,6 +247,8 @@ async fn scan_network(
             eprintln!("任务执行出错: {}", e);
         }
     }
+
+    pb.finish_with_message("网络扫描完成");
 
     let open_ips_lock = open_ips.lock().await;
     open_ips_lock.clone()
