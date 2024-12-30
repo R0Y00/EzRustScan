@@ -5,9 +5,7 @@ edition = "2021"
 
 [dependencies]
 tokio = { version = "1.42.0", features = ["full"] }
-rayon = "1.10.0"
 ipnetwork = "0.20.0"
-futures = "0.3.31 "
 colored = "2.2.0"
 indicatif = "0.17.9 "
 
