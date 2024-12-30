@@ -4,15 +4,16 @@ use tokio::net::TcpStream;
 use ipnetwork::IpNetwork;
 use clap::{Command, Arg, value_parser};
 use colored::*; // 引入 colored 库
-use tokio::sync::{Semaphore, Mutex};
+use tokio::sync::Semaphore;
 use indicatif::{ProgressBar, ProgressStyle}; // 引入 indicatif 库
+use dashmap::DashMap; // 引入 DashMap
 
-#[tokio::main]
+#[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() {
     // 使用 clap 解析命令行参数
     let matches = Command::new("Rust 端口扫描器")
-        .version("1.0")
-        .author("Your Name <you@example.com>")
+        .version("1.0.1")
+        .author("Royoo 3230853833@qq.com")
         .about("高性能端口扫描器，支持IP和网络范围扫描")
         .arg(
             Arg::new("ip")
@@ -60,6 +61,14 @@ async fn main() {
                 .help("是否输出关闭的端口")
                 .action(clap::ArgAction::SetTrue),
         )
+        .arg(
+            Arg::new("concurrency")
+                .long("concurrency")
+                .value_name("CONCURRENCY")
+                .help("最大并发数量，默认为 100")
+                .default_value("100")
+                .value_parser(value_parser!(usize)),
+        )
         .get_matches();
 
     // 获取命令行参数
@@ -69,9 +78,10 @@ async fn main() {
     let end_port: u16 = *matches.get_one::<u16>("end_port").unwrap();
     let timeout: u64 = *matches.get_one::<u64>("timeout").unwrap();
     let show_closed: bool = matches.get_flag("show_closed");
+    let concurrency: usize = *matches.get_one::<usize>("concurrency").unwrap();
 
     let timeout_duration = Duration::from_secs(timeout);
-    let semaphore = Arc::new(Semaphore::new(100)); // 最大并发数为100
+    let semaphore = Arc::new(Semaphore::new(concurrency)); // 动态设置并发数
 
     // 记录扫描开始的时间
     let start_time = Instant::now();
@@ -128,31 +138,32 @@ async fn scan_ports(
         }
     };
 
-    let ports: Vec<u16> = (start_port..=end_port).collect();
-    let results = Arc::new(Mutex::new(Vec::new()));
+    let results = Arc::new(DashMap::new()); // 使用 DashMap 替代 Mutex
     let mut handles = Vec::new();
 
     // 初始化进度条
-    let pb = ProgressBar::new(ports.len() as u64);
+    let pb = ProgressBar::new((end_port - start_port + 1) as u64);
     pb.set_style(ProgressStyle::default_bar()
         .template("{wide_bar} {pos}/{len} [{elapsed_precise}]")
         .expect("Failed to create ProgressStyle")
         .progress_chars("##-"));
 
-    for port in ports {
+    for port in start_port..=end_port {
         let semaphore_clone = semaphore.clone();
+        let results_clone = results.clone();
+        let pb = pb.clone();
         let ip = ip.clone();
-        let results = Arc::clone(&results);
-        let show_closed = show_closed;
-        let pb = pb.clone(); // 克隆进度条
 
         let handle = tokio::spawn(async move {
             let permit = semaphore_clone.acquire_owned().await.unwrap(); // 获取许可
+
+            // 扫描单个端口
             let (port, is_open) = scan_single_port(ip, port, timeout, show_closed).await;
+
             if is_open {
-                let mut results_lock = results.lock().await;
-                results_lock.push(port);
+                results_clone.insert(port, true);
             }
+
             pb.inc(1); // 更新进度条
             drop(permit); // 释放许可
         });
@@ -168,8 +179,8 @@ async fn scan_ports(
 
     pb.finish_with_message("扫描完成");
 
-    let results_lock = results.lock().await;
-    results_lock.clone()
+    // 收集结果
+    results.iter().map(|entry| *entry.key()).collect()
 }
 
 // 扫描单个端口
@@ -205,33 +216,40 @@ async fn scan_network(
         }
     };
 
-    let open_ips = Arc::new(Mutex::new(Vec::new())); // 保护共享变量
-    let ips: Vec<std::net::IpAddr> = network.iter().collect();
+    let open_ips = Arc::new(DashMap::new()); // 使用 DashMap 替代 Mutex
     let mut handles = Vec::new();
 
-    // 初始化进度条
-    let pb = ProgressBar::new(ips.len() as u64);
+    // 初始化进度条，判断网络范围大小并确保类型一致
+    let pb = ProgressBar::new({
+        match network.size() {
+            ipnetwork::NetworkSize::V4(size) => size as u64,
+            ipnetwork::NetworkSize::V6(size) => {
+                if size > u64::MAX as u128 {
+                    u64::MAX // 如果大于 u64 范围，使用 u64::MAX
+                } else {
+                    size as u64
+                }
+            }
+        }
+    });
     pb.set_style(ProgressStyle::default_bar()
         .template("{wide_bar} {pos}/{len} [{elapsed_precise}]")
-        .expect("Failed to create ProgressStyle")
+        .expect("Failed to set style")
         .progress_chars("##-"));
 
-    for ip in ips {
-        let open_ips = open_ips.clone();
+    for ip in network.iter() {
+        let open_ips = Arc::clone(&open_ips);
         let ip_str = ip.to_string();
         let semaphore = semaphore.clone();
-        let show_closed = show_closed;
-        let pb = pb.clone(); // 克隆进度条
+        let pb = pb.clone();
 
         let handle = tokio::spawn(async move {
-            let semaphore_clone = semaphore.clone();
-            let permit = semaphore_clone.acquire_owned().await.unwrap();
+            let permit = semaphore.clone().acquire_owned().await.unwrap();
 
             let open_ports = scan_ports(&ip_str, start_port, end_port, timeout, semaphore.clone(), show_closed).await;
 
             if !open_ports.is_empty() {
-                let mut open_ips_lock = open_ips.lock().await;
-                open_ips_lock.push(ip_str);
+                open_ips.insert(ip_str, true);
             }
 
             pb.inc(1); // 更新进度条
@@ -250,6 +268,5 @@ async fn scan_network(
 
     pb.finish_with_message("网络扫描完成");
 
-    let open_ips_lock = open_ips.lock().await;
-    open_ips_lock.clone()
+    open_ips.iter().map(|entry| entry.key().clone()).collect()
 }
