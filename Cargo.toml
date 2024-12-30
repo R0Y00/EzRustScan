@@ -8,6 +8,7 @@ tokio = { version = "1.42.0", features = ["full"] }
 ipnetwork = "0.20.0"
 colored = "2.2.0"
 indicatif = "0.17.9 "
+dashmap = "5.3.4"
 
 [dependencies.clap]
 version = "4.5.23"
